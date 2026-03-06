@@ -1,0 +1,446 @@
+{
+  "name": "BooksToScrape Telegram Bot (category first + search loop)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "22936839-4014-433d-a0b7-51418e73fcee",
+      "name": "Telegram Trigger",
+      "webhookId": "3802dbeb-2d9c-4db1-be2d-4c7cea1d6df7",
+      "credentials": {
+        "telegramApi": {
+          "id": "0eVcTstgjH9L84TW",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lee mensaje de Telegram y genera {chatId, query, rawText}\nconst u = $json;\nconst msg = u.message || {};\n\nconst chatId = msg.chat?.id ?? null;\nconst rawText = (msg.text ?? \"\").toString().trim();\n\n// normaliza: si escriben \"buscar xxx\" o \"/buscar xxx\"\nlet query = rawText.replace(/^\\/?buscar\\s+/i, \"\").trim().toLowerCase();\n\nreturn [{json:{chatId, rawText, query}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        -112
+      ],
+      "id": "9caf55fd-26d1-4d0f-b461-19135b5ab14f",
+      "name": "Parse Telegram"
+    },
+    {
+      "parameters": {
+        "url": "=https://books.toscrape.com/",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        96
+      ],
+      "id": "55e24c9e-7204-4fbc-a8f0-cbf17c309a9e",
+      "name": "HTTP Home"
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "category_names",
+              "cssSelector": "ul.nav-list ul li a",
+              "returnArray": true
+            },
+            {
+              "key": "category_hrefs",
+              "cssSelector": "ul.nav-list ul li a",
+              "returnValue": "attribute",
+              "attribute": "href",
+              "returnArray": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        656,
+        48
+      ],
+      "id": "c9e600f7-d886-4034-bd7b-eb38ac31ea7d",
+      "name": "Parse Categories"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {
+          "includeUnpaired": false
+        }
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        864,
+        -272
+      ],
+      "id": "8f9e98d5-c212-44e9-a4e5-1e14e34d1c8a",
+      "name": "Merge Input"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Decide: si query coincide EXACTO con categoría -> modo category\n// si no -> modo search (contiene). Inicializa loop.\n\nconst BASE = \"https://books.toscrape.com/\";\n\nconst norm = s =>\n  (s ?? \"\")\n    .toString()\n    .replace(/\\s+/g, \" \")\n    .trim()\n    .toLowerCase();\n\nconst chatId = $json.chatId ?? null;\nconst rawText = ($json.rawText ?? \"\").toString().trim();\nconst query = norm($json.query ?? rawText);\n\nconst names = Array.isArray($json.category_names) ? $json.category_names : [];\nconst hrefs = Array.isArray($json.category_hrefs) ? $json.category_hrefs : [];\n\nconst categories = names.map((n, i) => {\n\n  let href = (hrefs[i] ?? \"\").toString().trim();\n\n  // limpiar ../\n  href = href.replace(/^(\\.\\.\\/)+/, \"\");\n\n  return {\n    name: (n ?? \"\").toString().trim(),\n    key: norm(n),\n    url: BASE + href\n  };\n\n});\n\nconst match = categories.find(c => c.key === query) || null;\nconst mode = match ? \"category\" : \"search\";\n\nlet currentUrl;\n\nif (mode === \"category\") {\n\n  currentUrl = match.url;\n\n} else {\n\n  currentUrl = BASE + \"catalogue/page-1.html\";\n\n}\n\n// seguridad extra\nif (!currentUrl.startsWith(\"http\")) {\n  currentUrl = BASE;\n}\n\nreturn [{\n  json: {\n    chatId,\n    rawText,\n    query,\n    mode,\n    category: match ? match.name : \"\",\n    currentUrl,\n    results: [],\n    pageCount: 0,\n    maxPages: 50\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        -400
+      ],
+      "id": "f424a41d-c6d3-484d-8460-f82570d210f5",
+      "name": "Init Search/Category"
+    },
+    {
+      "parameters": {
+        "url": "={{$json.currentUrl}}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1408,
+        16
+      ],
+      "id": "7c6cee4e-f087-4747-8b45-d60121211049",
+      "name": "HTTP Page"
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "titles",
+              "cssSelector": "article.product_pod h3 a",
+              "returnValue": "attribute",
+              "attribute": "title",
+              "returnArray": true
+            },
+            {
+              "key": "hrefs",
+              "cssSelector": "article.product_pod h3 a",
+              "returnValue": "attribute",
+              "attribute": "href",
+              "returnArray": true
+            },
+            {
+              "key": "prices",
+              "cssSelector": "article.product_pod p.price_color",
+              "returnArray": true
+            },
+            {
+              "key": "nextRel",
+              "cssSelector": "li.next a",
+              "returnValue": "attribute",
+              "attribute": "href"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        1648,
+        16
+      ],
+      "id": "99009300-1cfa-4798-952a-9ec1f393fc99",
+      "name": "Parse Books"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1920,
+        0
+      ],
+      "id": "2b157354-3636-448e-9431-4155642fb714",
+      "name": "Merge State+Page"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Accumulate & Next\n// - Acumula resultados hasta 10\n// - Si mode=category: NO filtra (top 10 de esa categoría)\n// - Si mode=search: filtra por \"contiene\" (incluye letra sola como 'a')\n// - Calcula nextUrl y hasNext (BOOLEAN)\n// - Mantiene currentUrl siempre válido\n// - Links absolutos que sí abren\n\nconst BASE = \"https://books.toscrape.com/\";\n\nconst item = $json;\n\n// Datos del HTML (Parse Books)\nconst titles = Array.isArray(item.titles) ? item.titles : [];\nconst hrefs  = Array.isArray(item.hrefs) ? item.hrefs : [];\nconst prices = Array.isArray(item.prices) ? item.prices : [];\nconst nextRel = (item.nextRel ?? \"\").toString().trim();\n\n// Estado\nconst mode = (item.mode ?? \"search\").toString(); // \"category\" | \"search\"\nconst query = (item.query ?? \"\").toString().trim().toLowerCase();\n\nlet currentUrl = (item.currentUrl ?? \"\").toString().trim();\nif (!currentUrl.startsWith(\"http\")) currentUrl = BASE;\n\nconst pageCount = Number(item.pageCount ?? 0);\nconst maxPages  = Number(item.maxPages ?? 50);\n\nconst prevResults = Array.isArray(item.results) ? item.results : [];\n\n// Helpers URL (SIN new URL, para que no falle en tu n8n)\nfunction cleanRel(rel) {\n  return (rel ?? \"\").toString().trim().replace(/^(\\.\\.\\/)+/, \"\").replace(/^\\/+/, \"\");\n}\n\nfunction absUrl(rel, baseUrl) {\n  const r = cleanRel(rel);\n  if (!r) return \"\";\n  // si ya es absoluta\n  if (r.startsWith(\"http://\") || r.startsWith(\"https://\")) return r;\n\n  // baseUrl puede ser: https://books.toscrape.com/catalogue/page-2.html\n  // necesitamos: https://books.toscrape.com/ + r (si r es catalogue/...)\n  // o https://books.toscrape.com/catalogue/ + r (si r es a-light... dentro de catalogue/)\n  if (r.startsWith(\"catalogue/\") || r.startsWith(\"media/\")) {\n    return BASE + r;\n  }\n\n  // Si estamos en catalogue/..., y el href viene como \"a-book_1/index.html\"\n  // lo colgamos de /catalogue/\n  if (baseUrl.includes(\"/catalogue/\")) {\n    return BASE + \"catalogue/\" + r;\n  }\n\n  // fallback\n  return BASE + r;\n}\n\n// Filtro\nfunction titleMatches(t) {\n  if (mode !== \"search\") return true;   // category -> no filtra\n  if (!query) return true;              // si escriben vacío, devuelve lo que venga\n  const title = (t ?? \"\").toString().toLowerCase();\n  return title.includes(query);\n}\n\n// Construir libros en esta página\nconst pageBooks = [];\nfor (let i = 0; i < titles.length; i++) {\n  const title = titles[i];\n  if (!titleMatches(title)) continue;\n\n  pageBooks.push({\n    title,\n    price: prices[i] ?? \"\",\n    link: absUrl(hrefs[i], currentUrl),\n  });\n}\n\n// Acumular\nconst merged = [...prevResults, ...pageBooks];\nconst results10 = merged.slice(0, 10);\n\n// Decidir si seguimos\nlet hasNext = false;   // ✅ BOOLEAN real\nlet nextUrl = \"\";\n\n// Para categoría: igual usamos paginación si aún no hay 10 y existe next\n// Para search: igual\nconst canGoNext =\n  results10.length < 10 &&\n  (pageCount + 1) < maxPages &&\n  !!nextRel;\n\nif (canGoNext) {\n  nextUrl = absUrl(nextRel, currentUrl);\n\n  if (nextUrl && nextUrl.startsWith(\"http\")) {\n    hasNext = true;          // ✅ BOOLEAN real\n    currentUrl = nextUrl;    // preparar siguiente vuelta\n  } else {\n    hasNext = false;\n  }\n} else {\n  hasNext = false;\n}\n\n// DEVUELVE el estado para el IF/Loop\nreturn [\n  {\n    json: {\n      ...item,\n\n      results: results10,\n      count: results10.length,\n\n      pageCount: pageCount + 1,\n      currentUrl,\n      nextUrl,\n\n      hasNext, // ✅ boolean real, NO string\n\n      // debug (opcional)\n      debug_titles_on_page: titles.length,\n      debug_added_this_page: pageBooks.length,\n      debug_total_after_merge: merged.length,\n      debug_nextRel: nextRel,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        0
+      ],
+      "id": "ba6e7013-d451-40db-8601-220b9a93921f",
+      "name": "Accumulate & Next"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "907b132e-d180-45ff-a667-ab7addea22fd",
+              "leftValue": "=={{ ($json.hasNext ?? '').toString().replace('=','').toLowerCase() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        0
+      ],
+      "id": "20b307c5-e2b4-4105-ba0a-952e88a764ca",
+      "name": "Has Next?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Devuelve {chatId, text} para Telegram\nconst chatId = $json.chatId ?? null;\nconst mode = ($json.mode ?? \"search\").toString();\nconst query = ($json.query ?? \"\").toString();\nconst category = ($json.category ?? \"\").toString();\n\nconst results = Array.isArray($json.results) ? $json.results : [];\n\nlet header = mode === \"category\"\n  ? `📚 Categoría: \"${category}\"\\n✅ Top ${results.length}:`\n  : `🔎 Buscaste: \"${query}\"\\n✅ Top ${results.length}:`;\n\nlet body = results.length\n  ? results.map((r,i)=>`${i+1}) ${r.title}\\n💰 ${r.price}\\n🔗 ${r.link}`).join(\"\\n\\n\")\n  : `❌ No encontré 10 coincidencias.\\n👉 Prueba otra palabra o una categoría exacta (travel, mystery, crime, etc.).`;\n\nlet text = `${header}\\n\\n${body}`;\nif (text.length > 3800) text = text.slice(0,3800) + \"\\n\\n...(recortado)\";\n\nreturn [{json:{chatId, text}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        48
+      ],
+      "id": "873fa73b-b915-4d34-82a4-6b87287efe6e",
+      "name": "Format Message"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.text}}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2880,
+        0
+      ],
+      "id": "85f5f04f-dbc1-46fc-8233-4a7c6d2f1942",
+      "name": "Send Message",
+      "webhookId": "c7072c6b-ffcd-4ebb-ad57-206136994dd7",
+      "credentials": {
+        "telegramApi": {
+          "id": "0eVcTstgjH9L84TW",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Telegram": {
+      "main": [
+        [
+          {
+            "node": "HTTP Home",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Home": {
+      "main": [
+        [
+          {
+            "node": "Parse Categories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Categories": {
+      "main": [
+        [
+          {
+            "node": "Merge Input",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Input": {
+      "main": [
+        [
+          {
+            "node": "Init Search/Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Search/Category": {
+      "main": [
+        [
+          {
+            "node": "HTTP Page",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge State+Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Page": {
+      "main": [
+        [
+          {
+            "node": "Parse Books",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Books": {
+      "main": [
+        [
+          {
+            "node": "Merge State+Page",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge State+Page": {
+      "main": [
+        [
+          {
+            "node": "Accumulate & Next",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accumulate & Next": {
+      "main": [
+        [
+          {
+            "node": "Has Next?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Next?": {
+      "main": [
+        [
+          {
+            "node": "HTTP Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Message": {
+      "main": [
+        [
+          {
+            "node": "Send Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "9faddec1-3fd4-472c-9377-0ee9207ba5e9",
+  "meta": {
+    "instanceId": "c8302ecbc2f9e3c2b0c5630d2613897816a9d6fe7e4227b1afe99e31cce8329f"
+  },
+  "id": "GLnn4nn8j1miHm4N",
+  "tags": []
+}
